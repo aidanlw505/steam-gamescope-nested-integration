@@ -525,7 +525,7 @@ That's it. Enjoy!
 
 Everything covered so far adds a *session* entry, selected from the login screen, that hands over the entire display setup to Gamescope. On a single-monitor machine that's fine, but on a multi-monitor setup it's often preferable to keep the rest of your desktop and other displays untouched.
 
-For this, the repository's helper scripts also include `usr/bin/steam-gamescope-nested` and a matching `usr/share/applications/steam-gamescope-nested.desktop` application launcher entry (`Steam (Nested Gamescope)`). Rather than being selected at the login screen, it's launched like any other application from within an already-running desktop session, and it:
+For this, the repository's helper scripts also include `usr/bin/steam-gamescope-nested` and a matching `usr/share/applications/steam-gamescope-nested.desktop` application launcher entry (`Steam (Gamemode)`). Rather than being selected at the login screen, it's launched like any other application from within an already-running desktop session, and it:
 
 1. Shuts down any currently running Steam instance.
 2. Detects the resolution of the primary monitor (KDE Plasma via `kscreen-doctor`, GNOME via Mutter's `DisplayConfig` D-Bus interface, or X11 via `xrandr` - see the script for details).

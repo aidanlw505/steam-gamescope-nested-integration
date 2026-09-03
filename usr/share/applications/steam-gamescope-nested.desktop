@@ -1,6 +1,6 @@
 [Desktop Entry]
 Encoding=UTF-8
-Name=Steam (Nested Gamescope)
+Name=Steam (Gamemode)
 Comment=Restart Steam in a fullscreen Gamescope session on the primary monitor
 Exec=steam-gamescope-nested
 Icon=steam

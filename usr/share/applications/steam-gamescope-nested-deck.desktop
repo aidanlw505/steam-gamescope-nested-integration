@@ -1,6 +1,6 @@
 [Desktop Entry]
 Encoding=UTF-8
-Name=Steam (Nested Gamescope - SteamDeck Mode)
+Name=Steam (Deckmode)
 Comment=Restart Steam in a windowed Gamescope session at the Steam Deck's native 1280x800 resolution
 Exec=steam-gamescope-nested-deck
 Icon=steam

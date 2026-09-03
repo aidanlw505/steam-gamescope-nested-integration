@@ -92,7 +92,7 @@ Technically this is optional, but to get the details on the performance of your 
 * Download and install a set of scripts from this repository to help launch into SteamOS mode.
   * These includes fixes for running SteamOS set up for first time, performing updates within the Steam client, and switch back to the desktop.
 * Launch into SteamOS mode and run through the set up process.
-* (Optional) Use the `Steam (Nested Gamescope)` application launcher for a multi-monitor-friendly way to run Steam inside Gamescope without leaving your desktop session - see [Nested Gamescope for multi-monitor setups](#nested-gamescope-for-multi-monitor-setups).
+* (Optional) Use the `Steam (Gamemode)` application launcher for a multi-monitor-friendly way to run Steam inside Gamescope without leaving your desktop session - see [Nested Gamescope for multi-monitor setups](#nested-gamescope-for-multi-monitor-setups).
 
 ### Instructions
 
@@ -289,7 +289,7 @@ Alternatively, manually set the correct permissions and copy each helper script 
 
 The instructions above add a *session* entry that replaces your entire desktop session with Gamescope, selected from the login screen. That works well for a single-monitor setup, but on a multi-monitor setup it isn't always desirable to hand over every display to Steam.
 
-Installing the helper scripts also adds a `Steam (Nested Gamescope)` entry to your desktop's regular application menu (backed by the `steam-gamescope-nested` script). Launching it will:
+Installing the helper scripts also adds a `Steam (Gamemode)` entry to your desktop's regular application menu (backed by the `steam-gamescope-nested` script). Launching it will:
 
 1. Shut down any currently running Steam instance (and wait for it to fully exit).
 2. Detect the resolution of your **primary monitor**.
@@ -320,7 +320,7 @@ If none of these methods succeed (e.g., on other Wayland compositors such as Hyp
 
 > Note:
 >
-> The `Steam (Nested Gamescope)` entry can also be run directly from a terminal:
+> The `Steam (Gamemode)` entry can also be run directly from a terminal:
 >
 > ```bash
 > steam-gamescope-nested
@@ -474,7 +474,7 @@ Details of each helper script include:
 
 * `usr/bin/gamescope-session`: A script that launches the Steam client into SteamOS mode using Gamescope.
 
-* `usr/bin/steam-gamescope-nested`: A script that shuts down any running Steam instance and relaunches it in a fullscreen, nested Gamescope session sized to the primary monitor's resolution. Used by the `Steam (Nested Gamescope)` application launcher - see [Nested Gamescope for multi-monitor setups](#nested-gamescope-for-multi-monitor-setups).
+* `usr/bin/steam-gamescope-nested`: A script that shuts down any running Steam instance and relaunches it in a fullscreen, nested Gamescope session sized to the primary monitor's resolution. Used by the `Steam (Gamemode)` application launcher - see [Nested Gamescope for multi-monitor setups](#nested-gamescope-for-multi-monitor-setups).
 
 * `usr/bin/jupiter-biosupdate`: A dummy script that informs the Steam client of no bios updates as they`re only relevant for the Steam Deck and other SteamOS-compatible devices.
 
@@ -492,4 +492,4 @@ Details of each helper script include:
 
 * `usr/share/wayland-sessions/steam.desktop`: A file that adds an option to the display manager (e.g., SDDM, GDM) that you can select and log into SteamOS mode. This calls the `/usr/bin/gamescope-session` script.
 
-* `usr/share/applications/steam-gamescope-nested.desktop`: A file that adds a `Steam (Nested Gamescope)` entry to your desktop's application menu. This calls the `/usr/bin/steam-gamescope-nested` script.
+* `usr/share/applications/steam-gamescope-nested.desktop`: A file that adds a `Steam (Gamemode)` entry to your desktop's application menu. This calls the `/usr/bin/steam-gamescope-nested` script.
