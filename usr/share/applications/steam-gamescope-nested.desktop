@@ -1,0 +1,10 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=Steam (Nested Gamescope)
+Comment=Restart Steam in a fullscreen Gamescope session on the primary monitor
+Exec=steam-gamescope-nested
+Icon=steam
+Terminal=false
+Type=Application
+Categories=Game;
+StartupNotify=false

@@ -11,12 +11,19 @@ fi
 STEAMOS_POLKIT_HELPERS_DIR="steamos-polkit-helpers"
 USR_BIN_DIR="/usr/bin"
 WAYLAND_SESSIONS_DIR="/usr/share/wayland-sessions"
+APPLICATIONS_DIR="/usr/share/applications"
 
 
 # Remove the following scripts to the /usr/bin folder
 #
 # 'gamescope-session'
 sudo rm $USR_BIN_DIR/gamescope-session
+
+# 'steam-gamescope-nested'
+sudo rm $USR_BIN_DIR/steam-gamescope-nested
+
+# 'steam-gamescope-nested-deck'
+sudo rm $USR_BIN_DIR/steam-gamescope-nested-deck
 
 # 'jupiter-biosupdate'
 sudo rm $USR_BIN_DIR/jupiter-biosupdate
@@ -39,7 +46,13 @@ sudo rm $USR_BIN_DIR/$STEAMOS_POLKIT_HELPERS_DIR/steamos-set-timezone
 # Remove the following scripts to the /usr/share folder
 #
 # 'steam.desktop'
-sudo rm $WAYLAND_SESSIONS_DIR/steam.desktop 
+sudo rm $WAYLAND_SESSIONS_DIR/steam.desktop
+
+# 'steam-gamescope-nested.desktop'
+sudo rm $APPLICATIONS_DIR/steam-gamescope-nested.desktop
+
+# 'steam-gamescope-nested-deck.desktop'
+sudo rm $APPLICATIONS_DIR/steam-gamescope-nested-deck.desktop
 
 
 # Remove the 'steamos-polkit-helpers' folder under '/usr/bin'

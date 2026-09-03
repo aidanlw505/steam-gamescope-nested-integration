@@ -521,6 +521,20 @@ That's it. Enjoy!
 * Navigate to the Steam menu, then Settings, and you should be able to see the bluetooth settings and other available networks.
 * If a controller is set up, use the controller to open the Quick menu (holding the guide button + A) and the level slider should be functional on the `Performance Overlay`.
 
+### 12. (Optional) Nested Gamescope for multi-monitor setups
+
+Everything covered so far adds a *session* entry, selected from the login screen, that hands over the entire display setup to Gamescope. On a single-monitor machine that's fine, but on a multi-monitor setup it's often preferable to keep the rest of your desktop and other displays untouched.
+
+For this, the repository's helper scripts also include `usr/bin/steam-gamescope-nested` and a matching `usr/share/applications/steam-gamescope-nested.desktop` application launcher entry (`Steam (Nested Gamescope)`). Rather than being selected at the login screen, it's launched like any other application from within an already-running desktop session, and it:
+
+1. Shuts down any currently running Steam instance.
+2. Detects the resolution of the primary monitor (KDE Plasma via `kscreen-doctor`, GNOME via Mutter's `DisplayConfig` D-Bus interface, or X11 via `xrandr` - see the script for details).
+3. Relaunches Steam inside a fullscreen, nested Gamescope window (`gamescope -W <width> -H <height> -w <width> -h <height> --fullscreen`) sized to that monitor, so it doesn't spill onto or blank out the other displays.
+
+This is a convenience layered on top of the same `gamescope -e -- steam -steamdeck -steamos3` foundation from step 3 - refer to the [README.md](../README.md#nested-gamescope-for-multi-monitor-setups) for the full script and install steps.
+
+It also changes what `steamos-session-select` (step 10) does when invoked from this nested session: `steam-gamescope-nested` marks the session it launches with a `GAMESCOPE_NESTED_SESSION` environment variable (plus the host session's `DISPLAY`/`WAYLAND_DISPLAY`, since Gamescope's Steam integration points its `steam` child process at Gamescope's own nested display instead). When `steamos-session-select` sees that marker, instead of just shutting Steam down it restarts a normal, minimized (`steam -silent`) Steam session back on the host desktop - so selecting `Switch to Desktop` leaves you with an ordinary Steam still running, rather than none at all. If the host `WAYLAND_DISPLAY` was captured (i.e., the desktop session is Wayland), `-pipewire` is added too, so Steam uses PipeWire (via `xdg-desktop-portal`) for screen capture instead of assuming an X11-style capture path.
+
 ## Why these step-by-step instructions are required?
 
 ### Install Gamescope

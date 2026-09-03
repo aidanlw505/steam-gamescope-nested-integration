@@ -1,0 +1,226 @@
+#!/bin/bash
+
+# Shuts down any currently running Steam instance and relaunches it
+# in a *windowed*, nested Gamescope session sized to the Steam Deck's
+# native resolution (1280x800) - rather than the primary monitor's
+# resolution, as 'steam-gamescope-nested' does.
+#
+# This is useful when streaming/Remote Playing to an actual Steam
+# Deck: since the window is never bigger than 1280x800, that's all
+# that ever needs to be captured and encoded, instead of a full
+# monitor's resolution being captured and scaled down at the
+# receiving end.
+#
+# The resolution can be overridden with the
+# GAMESCOPE_NESTED_DECK_RESOLUTION environment variable (e.g.
+# GAMESCOPE_NESTED_DECK_RESOLUTION=1280x800), though this script's
+# whole purpose assumes the Steam Deck's actual native resolution.
+
+RESOLUTION="${GAMESCOPE_NESTED_DECK_RESOLUTION:-1280x800}"
+
+if [[ "$RESOLUTION" =~ ^([0-9]+)x([0-9]+)$ ]]; then
+    WIDTH="${BASH_REMATCH[1]}"
+    HEIGHT="${BASH_REMATCH[2]}"
+else
+    printf "[%s] [Error] '%s' is not a valid WIDTHxHEIGHT resolution.\n" "$0" "$RESOLUTION"
+    exit 1
+fi
+
+# Shut down any currently running Steam instance and wait for it to
+# fully exit before continuing, so that it isn't relaunched on top of
+# an instance that is still shutting down.
+shutdown_running_steam() {
+    pgrep -x steam &> /dev/null || return 0
+
+    printf "[%s] [Info] Shutting down the currently running Steam instance...\n" "$0"
+    steam -shutdown
+
+    for _ in $(seq 1 30); do
+        pgrep -x steam &> /dev/null || return 0
+        sleep 1
+    done
+
+    printf "[%s] [Warning] Steam is still running after waiting 30 seconds. Continuing anyway.\n" "$0"
+}
+
+shutdown_running_steam
+
+# Setting this variable will enable additional
+# options under settings in SteamOS mode, including the option
+# to 'Automatically Set Resolution' option, which can be turned
+# off to set the resolution manually.
+export GAMESCOPE_MODE_SAVE_FILE="$HOME/.config/gamescope/modes.cfg"
+
+# Let 'steamos-session-select' (invoked by Steam's 'Switch to Desktop'
+# option) know that this Steam instance is running inside a nested
+# Gamescope session, so that it restarts a normal, minimized Steam
+# session on the desktop instead of just shutting down.
+#
+# The host session's DISPLAY/WAYLAND_DISPLAY are also passed along
+# since Gamescope's Steam integration (-e) points its 'steam' child
+# process (and everything it in turn invokes, including
+# 'steamos-session-select') at Gamescope's own nested display, not
+# the desktop session this script was launched from.
+export GAMESCOPE_NESTED_SESSION="1"
+export GAMESCOPE_NESTED_HOST_DISPLAY="$DISPLAY"
+export GAMESCOPE_NESTED_HOST_WAYLAND_DISPLAY="$WAYLAND_DISPLAY"
+
+# Assume that MangoHud is not installed
+MANGOAPP_FLAG=""
+
+# Check that mangoapp is available. Set the flag if it exists,
+# otherwise inform to check that MangoHud is installed and
+# proceed without the flag.
+if command -v mangoapp &> /dev/null;
+then
+    MANGOAPP_FLAG="--mangoapp"
+else
+    printf "[%s] [Info] 'mangoapp' is not available on your system. Check to see that MangoHud is installed.\n" "$0"
+    printf "[%s] [Info] Continuing without the '--mangoapp' flag.\n" "$0"
+fi
+
+# Deliberately windowed (no '--fullscreen'/'-f'): the whole point of
+# this script is a window sized to exactly the Steam Deck's
+# resolution, not one that fills the monitor.
+GAMESCOPE_CMD=(
+    gamescope
+    -W "$WIDTH" -H "$HEIGHT" -w "$WIDTH" -h "$HEIGHT"
+    -g
+    --force-grab-cursor
+    $MANGOAPP_FLAG
+    -e -- steam -steamdeck -steamos3
+)
+
+# On KDE Plasma, proactively pin this windowed session to exactly
+# WIDTHxHEIGHT via a temporary KWin window rule, since Plasma is
+# otherwise free to not honor a client's requested initial size (e.g.
+# tiling/quick-tile state carried over from a previous window, or a
+# per-app remembered geometry) - and this script's entire purpose is
+# for the streamed window to be exactly the Steam Deck's resolution.
+#
+# The rule is added just before launching Gamescope and removed again
+# as soon as it exits (see 'trap' below), rather than left in place
+# permanently: it's only relevant while this script's own window
+# exists, and its Force* rule-type values below are inferred from
+# KWin's own source (src/rulesettings.kcfg and src/rules.h - the
+# 'SetRule' enum: Unused, DontAffect, Force, Apply, Remember, ApplyNow,
+# ForceTemporarily, giving Force=2) rather than confirmed against
+# every Plasma version - keeping the rule's lifetime scoped to this
+# script bounds how long a wrong guess could matter, and avoids
+# permanently cluttering the user's KWin rules if it is wrong.
+#
+# Other desktop environments aren't handled (yet): Gamescope's
+# requested size is passed along as normal regardless of DE, but
+# whether it's actually honored is up to that DE/WM.
+KDE_RULE_GROUP="steam-gamescope-nested-deck"
+
+kde_session() {
+    [ "$XDG_SESSION_DESKTOP" = "KDE" ] || [[ "$XDG_CURRENT_DESKTOP" == *KDE* ]]
+}
+
+have_kwin_config_tools() {
+    command -v kwriteconfig6 &> /dev/null || command -v kwriteconfig5 &> /dev/null
+}
+
+kwriteconfig() {
+    if command -v kwriteconfig6 &> /dev/null; then
+        kwriteconfig6 "$@"
+    else
+        kwriteconfig5 "$@"
+    fi
+}
+
+kreadconfig() {
+    if command -v kreadconfig6 &> /dev/null; then
+        kreadconfig6 "$@"
+    else
+        kreadconfig5 "$@"
+    fi
+}
+
+reconfigure_kwin() {
+    qdbus-qt6 org.kde.KWin /KWin reconfigure &> /dev/null \
+        || qdbus org.kde.KWin /KWin reconfigure &> /dev/null \
+        || busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure &> /dev/null
+}
+
+add_kde_window_rule() {
+    kde_session || return 0
+    have_kwin_config_tools || return 0
+
+    # Best-effort cleanup of a rule left behind by a previous run that
+    # didn't get to remove it (e.g. it was killed before reaching its
+    # own cleanup step below).
+    remove_kde_window_rule
+
+    local RULES COUNT
+    RULES="$(kreadconfig --file kwinrulesrc --group General --key rules 2> /dev/null)"
+    COUNT="$(kreadconfig --file kwinrulesrc --group General --key count 2> /dev/null)"
+    [[ "$COUNT" =~ ^[0-9]+$ ]] || COUNT=0
+
+    if [ -n "$RULES" ]; then
+        kwriteconfig --file kwinrulesrc --group General --key rules "$RULES,$KDE_RULE_GROUP"
+    else
+        kwriteconfig --file kwinrulesrc --group General --key rules "$KDE_RULE_GROUP"
+    fi
+    kwriteconfig --file kwinrulesrc --group General --key count $((COUNT + 1))
+
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key Description "steam-gamescope-nested-deck (temporary - safe to delete)"
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key wmclass "gamescope"
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key wmclassmatch 1              # StringMatch::ExactMatch
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key types 1                     # NET::Normal
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key size "$WIDTH,$HEIGHT"
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key sizerule 2                  # SetRule::Force
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key maximizehoriz false --type bool
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key maximizehorizrule 2         # SetRule::Force
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key maximizevert false --type bool
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key maximizevertrule 2          # SetRule::Force
+    # The forced 'size' above is the whole window frame, titlebar and
+    # borders included - with decorations on, that leaves less than
+    # WIDTHxHEIGHT of actual content. Forcing the window borderless
+    # makes the frame and the content area the same size.
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key noborder true --type bool
+    kwriteconfig --file kwinrulesrc --group "$KDE_RULE_GROUP" --key noborderrule 2               # SetRule::Force
+
+    reconfigure_kwin
+}
+
+remove_kde_window_rule() {
+    have_kwin_config_tools || return 0
+
+    local RULES
+    RULES="$(kreadconfig --file kwinrulesrc --group General --key rules 2> /dev/null)"
+    [[ ",$RULES," == *",$KDE_RULE_GROUP,"* ]] || return 0
+
+    local COUNT
+    COUNT="$(kreadconfig --file kwinrulesrc --group General --key count 2> /dev/null)"
+    [[ "$COUNT" =~ ^[0-9]+$ ]] && [ "$COUNT" -gt 0 ] || COUNT=1
+
+    local NEW_RULES
+    NEW_RULES="$(printf ',%s,' "$RULES" | sed "s/,$KDE_RULE_GROUP,/,/;s/^,//;s/,\$//")"
+
+    kwriteconfig --file kwinrulesrc --group General --key rules "$NEW_RULES"
+    kwriteconfig --file kwinrulesrc --group General --key count $((COUNT - 1))
+
+    reconfigure_kwin
+}
+
+trap remove_kde_window_rule EXIT INT TERM
+
+add_kde_window_rule
+
+# Run the actual Gamescope/Steam process tree inside its own transient
+# systemd scope, explicitly named to match the 'app-<ApplicationID>-
+# <random>' shape that 'xdg-desktop-portal' looks for when inferring
+# an unsandboxed app's identity for permission-store purposes (see
+# 'steam-gamescope-nested' for the full explanation). Matching the
+# same identity here ('steam') means a screen-share grant made in this
+# windowed Deck-mode session is visible to, and shares Steam's single
+# local restore-token cache with, a normal desktop Steam launch too.
+if command -v systemd-run &> /dev/null; then
+    systemd-run --user --scope --quiet --collect "--unit=app-steam-$$" -- "${GAMESCOPE_CMD[@]}"
+else
+    printf "[%s] [Warning] 'systemd-run' is not available.\n" "$0"
+    printf "[%s] [Warning] Steam will be launched without matching a normal desktop launch's xdg-desktop-portal identity, which may cause persistent permissions (e.g. screen sharing) to be asked for again after switching back to a normal Steam session.\n" "$0"
+    "${GAMESCOPE_CMD[@]}"
+fi

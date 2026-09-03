@@ -1,6 +1,181 @@
 #!/bin/bash
 
-# Shutting down Steam will return to the terminal, 
+# Invoked by the Steam client when 'Switch to Desktop' is selected
+# from the Steam menu.
+
+if [ "$GAMESCOPE_NESTED_SESSION" = "1" ]; then
+    # Running inside a nested Gamescope session (started via
+    # 'steam-gamescope-nested'). Rather than just shutting down and
+    # leaving Steam closed, shut down this nested session and restart
+    # a normal, minimized Steam session on the desktop it was
+    # originally launched from.
+    #
+    # This script is invoked as a child process of the very Steam
+    # instance that is about to shut down, which is expected to kill
+    # its own child process group as part of exiting. The restart
+    # logic below therefore needs to survive that - and, when Steam
+    # was launched from a desktop's application menu, survive systemd
+    # too:
+    #
+    # * Desktop environments increasingly launch apps as their own
+    #   transient systemd (--user) unit, e.g.
+    #   'app-steam\x2dgamescope\x2dnested@....service'. Plain 'setsid'
+    #   (a new process group/session) escapes Steam's process group,
+    #   but not that unit's *cgroup* - so when the unit's main process
+    #   (gamescope/steam) exits, systemd tears down the whole cgroup,
+    #   killing every process still in it, 'setsid'-detached children
+    #   included (and *any* of their own backgrounded/disowned children
+    #   in turn - detaching from the process group doesn't move them to
+    #   a different cgroup). 'systemd-run' is used instead, when
+    #   available, to start a brand new transient unit for the restart
+    #   logic below (its own cgroup, unrelated to the one being torn
+    #   down), falling back to plain 'setsid' otherwise (e.g.
+    #   non-systemd systems, or this script being run directly from a
+    #   terminal - neither of which hit the cgroup-teardown problem
+    #   above).
+    # * The same problem then applies to the *new* Steam instance
+    #   itself: started as a plain child of the restart logic below, it
+    #   would get killed the moment that logic's own unit's main
+    #   process finishes and its cgroup is torn down - before Steam has
+    #   any chance to detach itself. It's therefore started via
+    #   'systemd-run' too, as a further, independent transient unit, so
+    #   it keeps running under its own cgroup regardless of what
+    #   happens to the restart logic's unit afterwards.
+    # * 'systemd-run' also runs the given command line through
+    #   systemd's own '$FOO'/'${FOO}' substitution before executing it
+    #   (as it does for any ExecStart= command line), which silently
+    #   corrupts anything that merely looks like that syntax - e.g. the
+    #   array/command-substitution syntax below - and it does not
+    #   inherit this script's exported environment variables (e.g.
+    #   GAMESCOPE_NESTED_HOST_DISPLAY). Both are avoided by writing the
+    #   restart logic out to a plain script file first, with the
+    #   environment variables it needs baked in as literal values, and
+    #   running that file (as `bash /path/to/script`, with no '$' left
+    #   in the command line for systemd-run to mangle) instead of
+    #   passing the logic inline.
+    #
+    # Since it all runs backgrounded and detached, there's nowhere for
+    # its output to go if something goes wrong - so it's logged to
+    # LOG_FILE below instead of being discarded, for troubleshooting.
+    printf "[%s] [Info] Switching to desktop: restarting a normal, minimized Steam session.\n" "$0"
+
+    LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/steam-gamescope-nested"
+    LOG_FILE="$LOG_DIR/steamos-session-select.log"
+    mkdir -p "$LOG_DIR" 2> /dev/null
+
+    # Best-effort cleanup of a restart script left behind by a previous
+    # run that didn't get to delete itself (e.g. it was killed before
+    # reaching its own cleanup step at the bottom).
+    find "$LOG_DIR" -maxdepth 1 -name 'restart-*.sh' -mmin +60 -delete 2> /dev/null
+
+    HAVE_SYSTEMD_RUN=0
+    command -v systemd-run &> /dev/null && HAVE_SYSTEMD_RUN=1
+
+    RESTART_SCRIPT="$(mktemp "$LOG_DIR/restart-XXXXXX.sh")"
+    chmod 700 "$RESTART_SCRIPT"
+
+    # Below, an *unescaped* '$VAR' is substituted now, by this script,
+    # into a literal value baked into the generated file; an escaped
+    # '\$VAR' is left as-is for the generated file's own bash to
+    # evaluate when it actually runs.
+    cat > "$RESTART_SCRIPT" <<RESTART_EOF
+#!/bin/bash
+exec > >(while IFS= read -r line; do printf "[%s] %s\n" "\$(date "+%Y-%m-%d %H:%M:%S")" "\$line"; done >> "$LOG_FILE") 2>&1
+
+echo "Shutting down the nested Steam instance..."
+steam -shutdown
+
+# Wait for the nested Steam instance to fully exit (which in turn
+# closes the Gamescope window) before starting a new one.
+for _ in \$(seq 1 30); do
+    pgrep -x steam &> /dev/null || break
+    sleep 1
+done
+
+if pgrep -x steam &> /dev/null; then
+    echo "Warning: Steam is still running after waiting 30 seconds. Continuing anyway."
+else
+    echo "Steam has exited."
+fi
+
+# Give Steam a moment to release its single-instance lock/IPC socket
+# after the process itself disappears - starting a new instance too
+# soon after can make it think Steam is still running and silently
+# no-op instead of actually starting.
+sleep 3
+
+# Drop DISPLAY/WAYLAND_DISPLAY and the nested-session markers first
+# (rather than just overwriting them), since they may otherwise still
+# point at Gamescope's own nested display - then restore only what
+# the host session actually had (baked in below as literal values,
+# captured when this script was generated, since the environment
+# variables themselves aren't otherwise guaranteed to reach here).
+HOST_DISPLAY="$GAMESCOPE_NESTED_HOST_DISPLAY"
+HOST_WAYLAND_DISPLAY="$GAMESCOPE_NESTED_HOST_WAYLAND_DISPLAY"
+
+RESTART_ENV=(
+    env
+    -u GAMESCOPE_NESTED_SESSION
+    -u GAMESCOPE_NESTED_HOST_DISPLAY
+    -u GAMESCOPE_NESTED_HOST_WAYLAND_DISPLAY
+    -u DISPLAY
+    -u WAYLAND_DISPLAY
+)
+[ -n "\$HOST_DISPLAY" ] && RESTART_ENV+=(DISPLAY="\$HOST_DISPLAY")
+
+STEAM_ARGS=(-silent)
+if [ -n "\$HOST_WAYLAND_DISPLAY" ]; then
+    # The host session is Wayland: restore WAYLAND_DISPLAY and pass
+    # -pipewire so Steam uses PipeWire (via xdg-desktop-portal) for
+    # screen capture (e.g. Remote Play, broadcasting) instead of
+    # assuming an X11-style capture path.
+    RESTART_ENV+=(WAYLAND_DISPLAY="\$HOST_WAYLAND_DISPLAY")
+    STEAM_ARGS+=(-pipewire)
+fi
+
+echo "Restarting Steam: \${RESTART_ENV[*]} steam \${STEAM_ARGS[*]}"
+
+if [ "$HAVE_SYSTEMD_RUN" = "1" ]; then
+    # Start the new Steam instance as its own independent transient
+    # unit (note: deliberately *not* '--scope' - that mode blocks
+    # systemd-run in the foreground until the wrapped command exits,
+    # which would stop this script from ever reaching its own cleanup
+    # below), rather than as a plain child of this script, so it keeps
+    # running under its own cgroup once this restart script finishes
+    # below and systemd tears this one's cgroup down.
+    #
+    # The unit is named to match the 'app-<ApplicationID>-<random>'
+    # shape that 'xdg-desktop-portal' looks for (accepting either a
+    # '.scope' or a '.service' suffix) when inferring an unsandboxed
+    # app's identity for permission-store purposes (e.g. persistent
+    # screen-share grants). A name outside that shape (as used here
+    # previously) leaves the portal unable to infer any identity at
+    # all for this restarted Steam instance, which - like the
+    # mismatched identity a nested Steam launch gets (see
+    # 'steam-gamescope-nested') - makes it miss grants made under a
+    # normal desktop Steam launch's actual identity ('app-steam-...'),
+    # forcing a fresh permission prompt.
+    systemd-run --user --quiet --collect "--unit=app-steam-\$\$" -- "\${RESTART_ENV[@]}" steam "\${STEAM_ARGS[@]}"
+    echo "Handed off to systemd-run with status \$? (reflects whether Steam was successfully started, not whether it's still running)"
+else
+    "\${RESTART_ENV[@]}" steam "\${STEAM_ARGS[@]}" &
+    disown
+    echo "Steam launched in the background (pid \$!)"
+fi
+
+rm -f -- "\$0"
+RESTART_EOF
+
+    RUN_DETACHED=(setsid)
+    [ "$HAVE_SYSTEMD_RUN" = "1" ] && RUN_DETACHED=(systemd-run --user --quiet --collect "--unit=steamos-session-select-restart-$$")
+
+    "${RUN_DETACHED[@]}" bash "$RESTART_SCRIPT" < /dev/null &> /dev/null &
+    disown
+
+    exit 0
+fi
+
+# Shutting down Steam will return to the terminal,
 # desktop environment or the login screen (display manager)
 # depending on where Steam was launched.
 steam -shutdown

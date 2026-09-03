@@ -92,6 +92,7 @@ Technically this is optional, but to get the details on the performance of your 
 * Download and install a set of scripts from this repository to help launch into SteamOS mode.
   * These includes fixes for running SteamOS set up for first time, performing updates within the Steam client, and switch back to the desktop.
 * Launch into SteamOS mode and run through the set up process.
+* (Optional) Use the `Steam (Nested Gamescope)` application launcher for a multi-monitor-friendly way to run Steam inside Gamescope without leaving your desktop session - see [Nested Gamescope for multi-monitor setups](#nested-gamescope-for-multi-monitor-setups).
 
 ### Instructions
 
@@ -246,6 +247,30 @@ Alternatively, manually set the correct permissions and copy each helper script 
   cp ./usr/share/wayland-sessions/steam.desktop /usr/share/wayland-sessions/steam.desktop
   ```
 
+* `steam-gamescope-nested` (optional, see [Nested Gamescope for multi-monitor setups](#nested-gamescope-for-multi-monitor-setups)):
+
+  ```bash
+  chmod 755 ./usr/bin/steam-gamescope-nested
+  ```
+
+  ```bash
+  cp ./usr/bin/steam-gamescope-nested /usr/bin/steam-gamescope-nested
+  ```
+
+* `steam-gamescope-nested.desktop` (optional):
+
+  ```bash
+  mkdir -p /usr/share/applications
+  ```
+
+  ```bash
+  chmod 644 ./usr/share/applications/steam-gamescope-nested.desktop
+  ```
+
+  ```bash
+  cp ./usr/share/applications/steam-gamescope-nested.desktop /usr/share/applications/steam-gamescope-nested.desktop
+  ```
+
 
 #### 4. Launch SteamOS mode and run through SteamOS mode set up
 
@@ -259,6 +284,47 @@ Alternatively, manually set the correct permissions and copy each helper script 
   * If not logged in, log on to your Steam account.
   * Your computer will restart after completing the setup process.
 * Log back in to `SteamOS mode (Gamescope)` and enjoy!
+
+## Nested Gamescope for multi-monitor setups
+
+The instructions above add a *session* entry that replaces your entire desktop session with Gamescope, selected from the login screen. That works well for a single-monitor setup, but on a multi-monitor setup it isn't always desirable to hand over every display to Steam.
+
+Installing the helper scripts also adds a `Steam (Nested Gamescope)` entry to your desktop's regular application menu (backed by the `steam-gamescope-nested` script). Launching it will:
+
+1. Shut down any currently running Steam instance (and wait for it to fully exit).
+2. Detect the resolution of your **primary monitor**.
+3. Relaunch Steam inside a fullscreen, *nested* Gamescope session (i.e., as a window within your existing desktop session, rather than replacing it) sized to that resolution.
+
+This keeps Gamescope confined to a single display, so your other monitors are left alone and continue to be managed by your regular desktop.
+
+### 'Switch to Desktop' behaviour when running nested
+
+Normally, selecting `Switch to Desktop` from the Steam menu shuts Steam down entirely and returns you to whatever launched it (the login screen, for the session-based setup above).
+
+When Steam was instead launched via `steam-gamescope-nested`, selecting `Switch to Desktop` will shut down the nested session and restart a normal, minimized (`steam -silent`) Steam session on your desktop instead - so you land back on the desktop with an ordinary Steam still available, rather than no Steam at all. If the desktop session is Wayland, `-pipewire` is also added so that Steam uses PipeWire (via `xdg-desktop-portal`) for screen capture (e.g. Remote Play, broadcasting).
+
+This all happens in the background after control returns to Steam (so `Switch to Desktop` doesn't hang waiting for it), including a short pause after the nested Steam instance exits to let it fully release its single-instance lock before the new one starts. If a new Steam session doesn't appear, check `~/.cache/steam-gamescope-nested/steamos-session-select.log` for what happened.
+
+### Requirements for automatic resolution detection
+
+Detecting the primary monitor's resolution is attempted, in order:
+
+1. The `GAMESCOPE_NESTED_RESOLUTION` environment variable, if set (e.g. `GAMESCOPE_NESTED_RESOLUTION=2560x1440`), as a manual override. Useful if none of the automatic methods below work for your desktop environment.
+2. **KDE Plasma** (Wayland or X11), using `kscreen-doctor` (included with Plasma) and `jq`.
+3. **GNOME** (Wayland), using the `org.gnome.Mutter.DisplayConfig` D-Bus interface via `busctl` (part of `systemd`) and `jq`.
+4. **X11** (any desktop environment), using `xrandr`.
+
+If `jq` isn't installed, install it from your distribution's package manager (e.g., `pacman -S jq`, `dnf install jq`, `apt install jq`) to enable automatic detection on KDE Plasma and GNOME.
+
+If none of these methods succeed (e.g., on other Wayland compositors such as Hyprland or Sway, which don't have a standard concept of a "primary monitor"), a warning is printed and Gamescope falls back to its own default resolution - set `GAMESCOPE_NESTED_RESOLUTION` manually in that case.
+
+> Note:
+>
+> The `Steam (Nested Gamescope)` entry can also be run directly from a terminal:
+>
+> ```bash
+> steam-gamescope-nested
+> ```
 
 ## FAQs and troubleshooting
 
@@ -318,6 +384,12 @@ Alternatively, manually remove the scripts and the `steamos-polkit-helpers` fold
   rm /usr/bin/gamescope-session
   ```
 
+* `steam-gamescope-nested`:
+
+  ```bash
+  rm /usr/bin/steam-gamescope-nested
+  ```
+
 * `jupiter-biosupdate`:
 
   ```bash
@@ -361,6 +433,13 @@ Alternatively, manually remove the scripts and the `steamos-polkit-helpers` fold
   ```bash
   rm /usr/share/wayland-sessions/steam.desktop
   ```
+
+* `steam-gamescope-nested.desktop`:
+
+  ```bash
+  rm /usr/share/applications/steam-gamescope-nested.desktop
+  ```
+
 * `steamos-polkit-helpers`:
 
   ```bash
@@ -395,11 +474,13 @@ Details of each helper script include:
 
 * `usr/bin/gamescope-session`: A script that launches the Steam client into SteamOS mode using Gamescope.
 
+* `usr/bin/steam-gamescope-nested`: A script that shuts down any running Steam instance and relaunches it in a fullscreen, nested Gamescope session sized to the primary monitor's resolution. Used by the `Steam (Nested Gamescope)` application launcher - see [Nested Gamescope for multi-monitor setups](#nested-gamescope-for-multi-monitor-setups).
+
 * `usr/bin/jupiter-biosupdate`: A dummy script that informs the Steam client of no bios updates as they`re only relevant for the Steam Deck and other SteamOS-compatible devices.
 
 * `usr/bin/steamos-select-branch`: A dummy script that populates a value for Steam client updates to function but does not refer to specific SteamOS builds since updates to the operating system is managed separately.
 
-* `usr/bin/steamos-session-select`: A script that invokes the Steam client to shutdown and return to the login screen (or display manager).
+* `usr/bin/steamos-session-select`: A script that invokes the Steam client to shutdown and return to the login screen (or display manager). When invoked from a `steam-gamescope-nested` session (see [Nested Gamescope for multi-monitor setups](#nested-gamescope-for-multi-monitor-setups)), it instead restarts a normal, minimized Steam session on the desktop.
 
 * `usr/bin/steamos-update`: A dummy script that informs the Steam client that updates to the underlying operating system is applied (since this is managed separately).
 
@@ -410,3 +491,5 @@ Details of each helper script include:
 * `usr/bin/steamos-polkit-helpers/steamos-update`: A dummy helper script that calls the `/usr/bin/steamos-update` script. Steam client for Linux expects this script available in the `steamos-polkit-helpers` subfolder.
 
 * `usr/share/wayland-sessions/steam.desktop`: A file that adds an option to the display manager (e.g., SDDM, GDM) that you can select and log into SteamOS mode. This calls the `/usr/bin/gamescope-session` script.
+
+* `usr/share/applications/steam-gamescope-nested.desktop`: A file that adds a `Steam (Nested Gamescope)` entry to your desktop's application menu. This calls the `/usr/bin/steam-gamescope-nested` script.

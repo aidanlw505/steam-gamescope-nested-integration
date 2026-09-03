@@ -1,0 +1,185 @@
+#!/bin/bash
+
+# Shuts down any currently running Steam instance and relaunches it
+# in a fullscreen *nested* Gamescope session (i.e. as a window inside
+# your existing desktop session, rather than replacing it).
+#
+# The nested session is sized to the primary monitor's resolution,
+# which makes this useful for multi-monitor setups: Steam/Gamescope
+# will take over only the primary display instead of spanning across
+# monitors or picking an unexpected resolution.
+#
+# Resolution detection is attempted, in order:
+#   1. The GAMESCOPE_NESTED_RESOLUTION environment variable, if set
+#      (e.g. GAMESCOPE_NESTED_RESOLUTION=2560x1440), as a manual
+#      override.
+#   2. KDE Plasma (Wayland or X11), via 'kscreen-doctor'.
+#   3. GNOME (Wayland), via the org.gnome.Mutter.DisplayConfig D-Bus
+#      interface.
+#   4. X11 (any desktop), via 'xrandr'.
+#
+# If none of these succeed, a warning is printed and Gamescope falls
+# back to its own default resolution.
+
+# Detect the primary monitor's resolution on KDE Plasma using
+# 'kscreen-doctor'. KDE has no explicit "primary" flag in its output
+# list; the output with 'priority 1' is the primary display.
+detect_resolution_kde() {
+    command -v kscreen-doctor &> /dev/null || return 1
+    command -v jq &> /dev/null || return 1
+
+    kscreen-doctor -j 2> /dev/null | jq -er '
+        .outputs[]
+        | select(.priority == 1)
+        | "\(.size.width)x\(.size.height)"
+    '
+}
+
+# Detect the primary monitor's resolution on GNOME (Wayland) via the
+# Mutter DisplayConfig D-Bus interface (the same interface used by
+# tools like 'gnome-randr'). The logical monitor marked 'primary' is
+# matched back to its output's current mode to get its resolution,
+# which is then scaled down by the logical monitor's scale factor to
+# get the resolution in logical (desktop) pixels.
+detect_resolution_gnome() {
+    command -v busctl &> /dev/null || return 1
+    command -v jq &> /dev/null || return 1
+
+    busctl --user --json=short call \
+        org.gnome.Mutter.DisplayConfig \
+        /org/gnome/Mutter/DisplayConfig \
+        org.gnome.Mutter.DisplayConfig \
+        GetCurrentState 2> /dev/null \
+        | jq -er '
+            .data[1] as $monitors
+            | .data[2][]
+            | select(.[4] == true)
+            | .[5][0][0] as $connector
+            | .[2] as $scale
+            | ($monitors[]
+               | select(.[0][0] == $connector)
+               | .[1][]
+               | select((.[6]["is-current"].data // false) == true)
+               | "\((.[1] / $scale) | round)x\((.[2] / $scale) | round)")
+        '
+}
+
+# Detect the primary monitor's resolution on X11 using 'xrandr'.
+detect_resolution_x11() {
+    [ "$XDG_SESSION_TYPE" = "x11" ] || return 1
+    command -v xrandr &> /dev/null || return 1
+
+    xrandr --current 2> /dev/null \
+        | awk '/ primary/ {print $4}' \
+        | grep -oE '^[0-9]+x[0-9]+'
+}
+
+get_primary_resolution() {
+    if [ -n "$GAMESCOPE_NESTED_RESOLUTION" ]; then
+        echo "$GAMESCOPE_NESTED_RESOLUTION"
+        return
+    fi
+
+    detect_resolution_kde && return
+    detect_resolution_gnome && return
+    detect_resolution_x11 && return
+
+    return 1
+}
+
+# Shut down any currently running Steam instance and wait for it to
+# fully exit before continuing, so that it isn't relaunched on top of
+# an instance that is still shutting down.
+shutdown_running_steam() {
+    pgrep -x steam &> /dev/null || return 0
+
+    printf "[%s] [Info] Shutting down the currently running Steam instance...\n" "$0"
+    steam -shutdown
+
+    for _ in $(seq 1 30); do
+        pgrep -x steam &> /dev/null || return 0
+        sleep 1
+    done
+
+    printf "[%s] [Warning] Steam is still running after waiting 30 seconds. Continuing anyway.\n" "$0"
+}
+
+shutdown_running_steam
+
+RESOLUTION="$(get_primary_resolution)"
+
+RESOLUTION_FLAGS=()
+if [[ "$RESOLUTION" =~ ^([0-9]+)x([0-9]+)$ ]]; then
+    WIDTH="${BASH_REMATCH[1]}"
+    HEIGHT="${BASH_REMATCH[2]}"
+    RESOLUTION_FLAGS=(-W "$WIDTH" -H "$HEIGHT" -w "$WIDTH" -h "$HEIGHT")
+else
+    printf "[%s] [Warning] Could not detect the primary monitor's resolution.\n" "$0"
+    printf "[%s] [Warning] Continuing with Gamescope's default resolution instead.\n" "$0"
+    printf "[%s] [Warning] You can set this manually with the GAMESCOPE_NESTED_RESOLUTION environment variable (e.g. GAMESCOPE_NESTED_RESOLUTION=2560x1440).\n" "$0"
+fi
+
+# Setting this variable will enable additional
+# options under settings in SteamOS mode, including the option
+# to 'Automatically Set Resolution' option, which can be turned
+# off to set the resolution manually.
+export GAMESCOPE_MODE_SAVE_FILE="$HOME/.config/gamescope/modes.cfg"
+
+# Let 'steamos-session-select' (invoked by Steam's 'Switch to Desktop'
+# option) know that this Steam instance is running inside a nested
+# Gamescope session, so that it restarts a normal, minimized Steam
+# session on the desktop instead of just shutting down.
+#
+# The host session's DISPLAY/WAYLAND_DISPLAY are also passed along
+# since Gamescope's Steam integration (-e) points its 'steam' child
+# process (and everything it in turn invokes, including
+# 'steamos-session-select') at Gamescope's own nested display, not
+# the desktop session this script was launched from.
+export GAMESCOPE_NESTED_SESSION="1"
+export GAMESCOPE_NESTED_HOST_DISPLAY="$DISPLAY"
+export GAMESCOPE_NESTED_HOST_WAYLAND_DISPLAY="$WAYLAND_DISPLAY"
+
+# Assume that MangoHud is not installed
+MANGOAPP_FLAG=""
+
+# Check that mangoapp is available. Set the flag if it exists,
+# otherwise inform to check that MangoHud is installed and
+# proceed without the flag.
+if command -v mangoapp &> /dev/null;
+then
+    MANGOAPP_FLAG="--mangoapp"
+else
+    printf "[%s] [Info] 'mangoapp' is not available on your system. Check to see that MangoHud is installed.\n" "$0"
+    printf "[%s] [Info] Continuing without the '--mangoapp' flag.\n" "$0"
+fi
+
+GAMESCOPE_CMD=(
+    gamescope
+    "${RESOLUTION_FLAGS[@]}"
+    -g
+    --force-grab-cursor
+    --fullscreen
+    $MANGOAPP_FLAG
+    -e -- steam -steamdeck -steamos3
+)
+
+# Run the actual Gamescope/Steam process tree inside its own transient
+# systemd scope, explicitly named to match the 'app-<ApplicationID>-
+# <random>' shape that 'xdg-desktop-portal' looks for (via
+# 'sd_pid_get_user_unit()') when inferring an unsandboxed app's
+# identity for permission-store purposes (e.g. persistent screen-share
+# grants). Without this, KDE assigns a scope/service named after this
+# script's *own* desktop file ('steam-gamescope-nested') instead, which
+# the portal treats as a completely different application from a
+# normal desktop Steam launch - so a persistent grant obtained in one
+# is invisible to the other, and Steam's single local cache of "which
+# restore token to present next" ends up pointing at the wrong one,
+# forcing a fresh permission prompt after switching back to a normal
+# Steam session.
+if command -v systemd-run &> /dev/null; then
+    systemd-run --user --scope --quiet --collect "--unit=app-steam-$$" -- "${GAMESCOPE_CMD[@]}"
+else
+    printf "[%s] [Warning] 'systemd-run' is not available.\n" "$0"
+    printf "[%s] [Warning] Steam will be launched without matching a normal desktop launch's xdg-desktop-portal identity, which may cause persistent permissions (e.g. screen sharing) to be asked for again after switching back to a normal Steam session.\n" "$0"
+    "${GAMESCOPE_CMD[@]}"
+fi
