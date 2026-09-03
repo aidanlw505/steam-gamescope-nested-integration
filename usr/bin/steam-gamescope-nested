@@ -38,9 +38,13 @@ detect_resolution_kde() {
 # Detect the primary monitor's resolution on GNOME (Wayland) via the
 # Mutter DisplayConfig D-Bus interface (the same interface used by
 # tools like 'gnome-randr'). The logical monitor marked 'primary' is
-# matched back to its output's current mode to get its resolution,
-# which is then scaled down by the logical monitor's scale factor to
-# get the resolution in logical (desktop) pixels.
+# matched back to its output's current mode to get its resolution, in
+# physical (true) pixels - i.e. the mode's own width/height, *not*
+# divided by the logical monitor's scale factor. Dividing by the scale
+# would give the logical (desktop) pixel size instead, which is
+# smaller than the display's real resolution whenever fractional/
+# integer scaling is in use (e.g. a 4K display at 200% scale would
+# report 1920x1080 instead of 3840x2160).
 detect_resolution_gnome() {
     command -v busctl &> /dev/null || return 1
     command -v jq &> /dev/null || return 1
@@ -55,12 +59,11 @@ detect_resolution_gnome() {
             | .data[2][]
             | select(.[4] == true)
             | .[5][0][0] as $connector
-            | .[2] as $scale
             | ($monitors[]
                | select(.[0][0] == $connector)
                | .[1][]
                | select((.[6]["is-current"].data // false) == true)
-               | "\((.[1] / $scale) | round)x\((.[2] / $scale) | round)")
+               | "\(.[1])x\(.[2])")
         '
 }
 
@@ -87,6 +90,61 @@ get_primary_resolution() {
     return 1
 }
 
+# While the nested session has focus, Gamescope grabs the mouse/
+# keyboard and Steam Input reads controllers directly (via uinput/hidraw
+# rather than the desktop's normal input path), so the *host* desktop
+# never sees any of that activity. Left alone, the host's own idle
+# timer runs out mid-session and blanks/locks the screen or suspends
+# the machine out from under the game.
+#
+# Inhibiting is done via the standard 'org.freedesktop.ScreenSaver'
+# D-Bus interface (the same one used by GameMode, browsers and video
+# players for this exact purpose) rather than 'systemd-inhibit', since
+# screen locking/blanking is driven by the desktop session itself
+# (GNOME's SessionManager, KDE's PowerDevil, etc.), not by
+# systemd-logind, and both KDE and GNOME forward this well-known
+# interface to their own idle-inhibition handling. On most desktops
+# this also prevents the automatic suspend tied to that same idle
+# timer, though that part isn't guaranteed by the interface itself.
+INHIBIT_COOKIE=""
+
+# Ask the desktop to inhibit idle/screensaver actions for as long as
+# this script is running, keeping the returned cookie to release it
+# again later with 'uninhibit_idle'.
+inhibit_idle() {
+    command -v busctl &> /dev/null || {
+        printf "[%s] [Warning] 'busctl' is not available, so idle/screensaver inhibition could not be requested.\n" "$0"
+        printf "[%s] [Warning] The screen may lock, blank or the system may suspend during the nested session, since the desktop won't see any input passed to it.\n" "$0"
+        return 1
+    }
+
+    local output
+    output="$(busctl --user call \
+        org.freedesktop.ScreenSaver \
+        /org/freedesktop/ScreenSaver \
+        org.freedesktop.ScreenSaver \
+        Inhibit ss "steam-gamescope-nested" "A nested Gamescope Steam session is running" \
+        2> /dev/null)" || {
+        printf "[%s] [Warning] Could not request idle/screensaver inhibition from the desktop.\n" "$0"
+        printf "[%s] [Warning] The screen may lock, blank or the system may suspend during the nested session, since the desktop won't see any input passed to it.\n" "$0"
+        return 1
+    }
+
+    INHIBIT_COOKIE="${output#u }"
+}
+
+# Release the inhibitor lock taken by 'inhibit_idle', if any. Safe to
+# call even if 'inhibit_idle' was never called or failed.
+uninhibit_idle() {
+    [ -n "$INHIBIT_COOKIE" ] || return 0
+
+    busctl --user call \
+        org.freedesktop.ScreenSaver \
+        /org/freedesktop/ScreenSaver \
+        org.freedesktop.ScreenSaver \
+        UnInhibit u "$INHIBIT_COOKIE" &> /dev/null
+}
+
 # Shut down any currently running Steam instance and wait for it to
 # fully exit before continuing, so that it isn't relaunched on top of
 # an instance that is still shutting down.
@@ -105,6 +163,13 @@ shutdown_running_steam() {
 }
 
 shutdown_running_steam
+
+# Release the idle inhibitor whenever this script exits, however it
+# exits, since it's the one that requested it in the first place -
+# Gamescope's own exit doesn't clear a lock taken via D-Bus.
+trap uninhibit_idle EXIT
+
+inhibit_idle
 
 RESOLUTION="$(get_primary_resolution)"
 
